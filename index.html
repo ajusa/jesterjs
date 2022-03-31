@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <title></title>
+    <script src="./jesterjs.js"></script>
+    <script src="https://unpkg.com/htmx.org@1.7.0"></script>
+    <script>
+      XMLHttpRequest.prototype.wrappedSetRequestHeader = 
+        XMLHttpRequest.prototype.setRequestHeader; 
+
+      // Override the existing setRequestHeader function so that it stores the headers
+      XMLHttpRequest.prototype.setRequestHeader = function(header, value) {
+        this.wrappedSetRequestHeader(header, value);
+        if(!this.headers) {
+          this.headers = {};
+        }
+        this.headers[header] = String(value);
+      }
+      OriginalXHR = XMLHttpRequest;
+
+      XMLHttpRequest = function() {
+        const xhr = new OriginalXHR();
+
+        async function mockXhrRequest(requestPayload) {
+          if(requestPayload == null){
+            requestPayload = "";
+          }
+          const response = run(xhr.url, xhr.headers, requestPayload)
+          const mockedValues = {
+            readyState: 4,
+            response: response.body,
+            responseText: response.body,
+            responseUrl: xhr.url,
+            status: 200,
+            statusText: 'OK',
+            timeout: 0,
+            // ...config.responseProperties,
+            headers: {
+              status: '200',
+              ...response.headers,
+            },
+          };
+
+          Object.entries(mockedValues).forEach(([ key, value ]) => {
+            Object.defineProperties(xhr, {
+              [key]: {
+                configurable: true,
+                enumerable: true,
+                // Must use getter/setter because `Object.defineProperty(xhr, ...)` fails if the field only uses
+                // a getter/unset setter. Properties with `writable`/`value` still work as expected.
+                get() {
+                  return this[`_${key}`];
+                },
+                set(newValue) {
+                  this[`_${key}`] = newValue;
+                  return this;
+                },
+              },
+              [`_${key}`]: {
+                configurable: true,
+                enumerable: false,
+                writable: true,
+                value: mockedValues[key],
+              },
+            });
+          });
+
+          function getResponseHeader(headerKey) {
+            const headerVal = this.headers[headerKey];
+
+            if (headerVal != null) {
+              return headerVal;
+            }
+
+            return null;
+          }
+
+          function getAllResponseHeaders() {
+            return Object.entries(this.headers)
+              .map(([ headerKey, headerVal ]) => `${headerKey}: ${headerVal}`)
+              .join('\r\n');
+          }
+
+          xhr.getResponseHeader = getResponseHeader.bind(xhr);
+          xhr.getAllResponseHeaders = getAllResponseHeaders.bind(xhr);
+        }
+
+        xhr.originalOpen = xhr.open;
+        xhr.open = function(method, url, ...args) {
+          xhr.url = url;
+          xhr.originalOpen(method, url, ...args);
+        };
+
+        xhr.send = async function(requestPayload) {
+          await mockXhrRequest(requestPayload);
+
+          const resolveEvents = [
+            {
+              eventType: 'readystatechange',
+            },
+            {
+              eventType: 'load',
+              // `ProgressEvent` properties: https://developer.mozilla.org/en-US/docs/Web/API/ProgressEvent/ProgressEvent
+              properties: {
+                lengthComputable: true,
+                loaded: xhr.responseText.length,
+                total: xhr.responseText.length,
+              }
+            },
+            {
+              // Used by Axios
+              eventType: 'loadend',
+              properties: {
+                lengthComputable: true,
+                loaded: xhr.responseText.length,
+                total: xhr.responseText.length,
+              }
+            },
+          ];
+
+          resolveEvents.forEach(({ eventType, properties }) => {
+            const resolveRequest = () => {
+              const resolveOnHandler = xhr[`on${eventType}`] || (() => {});
+              resolveOnHandler(properties);
+            };
+            resolveRequest()
+          });
+        };
+        return xhr;
+      }
+    </script>
+  </head>
+  <body>
+    <input type="text" name="name" autocomplete="off" hx-target="#myName" hx-trigger="input" hx-post="/name">
+    <div id="myName"></div>
+  </body>
+</html>
